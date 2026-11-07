@@ -1,6 +1,6 @@
 ---
 name: bankopenapi
-description: Tích hợp BankOpenAPI để nhận tiền chuyển khoản vào tài khoản ngân hàng Việt Nam - tạo yêu cầu thanh toán (mã TT… trong nội dung chuyển khoản), hiện mã VietQR, nhận webhook payment_request.paid / transaction.received, verify chữ ký Standard Webhooks, chống xử lý trùng. Dùng khi người dùng muốn thu tiền chuyển khoản cho đơn hàng, tự xác nhận thanh toán, hiện QR chuyển khoản, nhận báo có qua webhook, hoặc nhắc tới BankOpenAPI, app.bankopenapi.com, API key boa_live_. Use for BankOpenAPI bank-transfer payments, VietQR checkout and payment webhooks in Vietnam.
+description: Tích hợp BankOpenAPI để nhận tiền chuyển khoản vào tài khoản ngân hàng Việt Nam - tạo yêu cầu thanh toán (mã TT… trong nội dung chuyển khoản), hiện mã VietQR, nhận webhook payment_request.paid / transaction.received, verify chữ ký Standard Webhooks, chống xử lý trùng. Dùng khi người dùng muốn thu tiền chuyển khoản cho đơn hàng, tự xác nhận thanh toán, hiện QR chuyển khoản, nhận báo có qua webhook, hoặc nhắc tới BankOpenAPI, app.bankopenapi.com, API key boa_live_, gói npm bankopenapi. Use for BankOpenAPI bank-transfer payments, VietQR checkout and payment webhooks in Vietnam.
 ---
 
 # BankOpenAPI
@@ -27,9 +27,48 @@ Tài liệu đầy đủ: https://bankopenapi.com/tai-lieu
 - **Sandbox:** API key `boa_test_…` chỉ làm việc với dữ liệu thử. Tạo tài khoản ngân hàng thử bằng `POST /v1/test/bank-accounts`, giả lập thanh toán bằng `POST /v1/test/payment-requests/:id/pay` (hoặc tiền vào tùy ý: `POST /v1/test/transactions`). Webhook của dữ liệu thử có `livemode: false`. Chi tiết: https://bankopenapi.com/tai-lieu/sandbox
 - Không tự đặt nội dung chuyển khoản khác `transfer.content`; không dùng số tài khoản gốc thay cho `transfer.accountNumber` (có thể là virtual account).
 
+## Dự án JavaScript/TypeScript: dùng SDK chính thức
+
+Node.js 20+, Next.js (App Router, Pages Router, Edge), Cloudflare Workers, Bun, Deno: cài SDK thay vì tự gọi `fetch`. SDK không phụ thuộc gói nào, có kiểu TypeScript, tự retry (mạng, 429, 5xx) với `Idempotency-Key` tự sinh, và có `verifyWebhook` nên không cần cài `standardwebhooks`.
+
+```bash
+npm install bankopenapi
+```
+
+```ts
+import BankOpenAPI, { verifyWebhook, WebhookVerificationError } from "bankopenapi";
+
+const boa = new BankOpenAPI(); // đọc BANKOPENAPI_API_KEY (Workers: new BankOpenAPI({ apiKey: env.BANKOPENAPI_API_KEY }))
+
+// Tạo yêu cầu thanh toán cho đơn
+const pr = await boa.paymentRequests.create(
+  { amount: order.total, orderId: order.code, description: `Đơn hàng ${order.code}` },
+  { idempotencyKey: `order-${order.code}` },
+);
+// pr.qr?.payload → vẽ QR; pr.hostedUrl → trang thanh toán; pr.transfer → thông tin chuyển khoản
+
+// Route nhận webhook (Next.js App Router): body thô + headers
+export async function POST(req: Request) {
+  const body = await req.text();
+  let event;
+  try {
+    event = await verifyWebhook(body, req.headers, process.env.BANKOPENAPI_WEBHOOK_SECRET!);
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) return new Response("Invalid signature", { status: 400 });
+    throw err;
+  }
+  if (event.type === "payment_request.paid") { /* event.data là PaymentRequest: chống trùng theo event.id rồi cập nhật đơn */ }
+  return new Response(null, { status: 200 });
+}
+```
+
+Hàm có sẵn: `boa.paymentRequests.create/retrieve/list/cancel`, `boa.transactions.list/retrieve`, `boa.bankAccounts.list/retrieve`, `boa.webhookEndpoints.*` (`create` tự kiểm tra URL trước), `boa.events.*`, `boa.sandbox.createBankAccount/createTransaction/payPaymentRequest` (khóa `boa_test_`). `list()` dùng được với `for await` để tự sang trang. Lỗi là `BankOpenAPIError` có `code`, `status`, `requestId`. Express: dùng `express.raw({ type: "application/json" })` cho route webhook. Chi tiết: https://bankopenapi.com/tai-lieu/sdk
+
+Ngôn ngữ khác (PHP, Python, Go…): gọi REST theo mục dưới.
+
 ## API
 
-Base URL: `https://app.bankopenapi.com/api/v1` (sẽ chuyển sang `api.bankopenapi.com`; đặt base URL trong biến môi trường `BANKOPENAPI_API_BASE`).
+Base URL: `https://app.bankopenapi.com/api/v1` (sẽ chuyển sang `api.bankopenapi.com`; đặt base URL trong biến môi trường `BANKOPENAPI_BASE_URL`).
 
 Header: `Authorization: Bearer <API key>` (dạng `boa_live_` + 36 ký tự, khóa sandbox `boa_test_`; khóa cũ có 40 ký tự), `Content-Type: application/json` khi có body.
 
@@ -48,8 +87,6 @@ Header: `Authorization: Bearer <API key>` (dạng `boa_live_` + 36 ký tự, kh�
 Lệnh POST nhận header `Idempotency-Key` (1–255 ký tự, vd. UUID mới cho mỗi lệnh): gửi lại cùng khóa trong 24 giờ thì nhận đúng phản hồi cũ (header `Idempotent-Replayed: true`), không tạo trùng. Retry sau timeout luôn dùng lại khóa cũ. API key "chỉ đọc" gọi POST bị 403 `INSUFFICIENT_PERMISSION`.
 
 Quản lý webhook endpoint: `/v1/webhook-endpoints` (gọi `POST …/test-url` với `{ url }` trước, rồi tạo kèm `urlTestToken`; signing secret ở `GET …/:id/secret`). Chi tiết: https://bankopenapi.com/tai-lieu/api/webhook-endpoint
-
-Chưa có (đừng gọi): SDK chính thức.
 
 Body tạo yêu cầu:
 
@@ -95,7 +132,7 @@ Tạo yêu cầu bị timeout: trước khi tạo lại, gọi `GET /v1/payment-
 ### Ví dụ: tạo yêu cầu (Node.js 18+)
 
 ```js
-const API = process.env.BANKOPENAPI_API_BASE ?? "https://app.bankopenapi.com/api/v1";
+const API = process.env.BANKOPENAPI_BASE_URL ?? "https://app.bankopenapi.com/api/v1";
 
 export async function createPaymentRequest(order) {
   const res = await fetch(`${API}/payment-requests`, {
