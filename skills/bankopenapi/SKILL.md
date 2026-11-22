@@ -83,8 +83,15 @@ Header: `Authorization: Bearer <API key>` (dạng `boa_live_` + 36 ký tự, kh�
 | `GET /v1/transactions/:id` | Xem một giao dịch (`txn_…`) |
 | `GET /v1/bank-accounts` | Tài khoản ngân hàng đang liên kết (`id` dùng làm `bankAccountId`) |
 | `GET /v1/bank-accounts/:id` | Xem một tài khoản (`ba_…`) |
+| `GET /v1/deeplink-banks` | 32 ngân hàng của người trả mở app được (`bin`, `name`, `logoUrl`, `platformRequired`) |
+| `POST /v1/deeplinks` | Link mở app ngân hàng của người trả, điền sẵn giao dịch (xem dưới) |
+| `POST /v1/deeplink-pages` | Trang chọn ngân hàng dựng sẵn `/mo-app/<id>` để gửi cho người trả (`GET /v1/deeplink-pages/{id}` để xem lại) |
 
 Lệnh POST nhận header `Idempotency-Key` (1–255 ký tự, vd. UUID mới cho mỗi lệnh): gửi lại cùng khóa trong 24 giờ thì nhận đúng phản hồi cũ (header `Idempotent-Replayed: true`), không tạo trùng. Retry sau timeout luôn dùng lại khóa cũ. API key "chỉ đọc" gọi POST bị 403 `INSUFFICIENT_PERMISSION`.
+
+Mở app ngân hàng (deeplink), chỉ trên điện thoại: khi người trả chọn ngân hàng, server gọi `POST /v1/deeplinks` với `payerBankBin`, `platform` (`ios` | `android`, bắt buộc nếu `platformRequired`), và `paymentRequestId` (hoặc `bankAccountId` kèm `amount`, `content` ≤ 25 ký tự không dấu), tùy chọn `returnUrl` (https; quay về kèm `deeplinkStatus`, chỉ để hiển thị). Trả `{ url }`: chuyển trình duyệt sang `url`. Đơn vẫn chỉ coi là đã trả theo webhook. Sandbox trả link giả `bankopenapi-sandbox://…`.
+
+Tài khoản chưa liên kết (nền tảng nhiều người bán): gửi `transfer: { bankBin, accountNumber, accountName?, amount?, content? }` thay cho `bankAccountId`. Không có báo có cho tài khoản này. Phí 50đ mỗi phiên (cùng thông tin chuyển khoản trong 30 phút tính một lần), trừ vào số dư, trường `fee` trong response; số dư không đủ thì `402 PAYMENT_REQUIRED`, hiện mã QR thay thế. Yêu cầu thanh toán và tài khoản đã liên kết miễn phí. Không muốn dựng giao diện: `POST /v1/deeplink-pages` với `bankAccountId` (kèm `amount`, `content`) hoặc `transfer`, tùy chọn `description`, `returnUrl`, `expiresInMinutes` (5–10080, mặc định 1440); gửi `url` trả về cho người trả. Chi tiết: https://bankopenapi.com/tai-lieu/api/deeplink
 
 Quản lý webhook endpoint: `/v1/webhook-endpoints` (gọi `POST …/test-url` với `{ url }` trước, rồi tạo kèm `urlTestToken`; signing secret ở `GET …/:id/secret`). Chi tiết: https://bankopenapi.com/tai-lieu/api/webhook-endpoint
 
@@ -246,7 +253,7 @@ Khi người dùng hết 100 giao dịch miễn phí của tháng và số dư b
 
 ## MCP server
 
-Agent gọi trực tiếp BankOpenAPI qua MCP (Streamable HTTP): `https://app.bankopenapi.com/api/mcp`, header `Authorization: Bearer <API key>`. Tool: `get_account`, `get_balance`, `create_payment_request`, `get_payment_request`, `list_payment_requests`, `cancel_payment_request`, `list_transactions`.
+Agent gọi trực tiếp BankOpenAPI qua MCP (Streamable HTTP): `https://app.bankopenapi.com/api/mcp`, header `Authorization: Bearer <API key>`. Tool: `get_account`, `get_balance`, `create_payment_request`, `get_payment_request`, `list_payment_requests`, `cancel_payment_request`, `list_transactions`, `list_deeplink_banks`, `create_deeplink`, `create_deeplink_page` (tài khoản chưa liên kết: tham số phẳng `transferBankBin`, `transferAccountNumber`, `transferAccountName`).
 
 ```bash
 claude mcp add --transport http bankopenapi https://app.bankopenapi.com/api/mcp --header "Authorization: Bearer $BANKOPENAPI_API_KEY"
